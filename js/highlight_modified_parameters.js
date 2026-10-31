@@ -65,8 +65,6 @@ app.registerExtension({
                     const previousValue = this._paramHighlighter.previousValue;
                     this._paramHighlighter.hasChanged = value !== previousValue;
 
-                    console.log(`${node.comfyClass} widget ${index}: ${previousValue} -> ${value}`);
-
                     node.setDirtyCanvas(true, true);
 
                     originalCallback?.apply(this, arguments);
@@ -78,8 +76,6 @@ app.registerExtension({
     },
 
     async setup() {
-        console.log(app.canvas);
-        console.log(LiteGraph);
         const originalQueuePrompt = app.queuePrompt;
 
         // set new previousValues and remove highlight when user runs the workflow
@@ -88,7 +84,6 @@ app.registerExtension({
 
             if (app.graph && app.graph._nodes) {
                 app.graph._nodes.forEach(node => {
-                    console.log(node);
                     if (node.widgets) {
                         writePreviousWidgetValues(node);
                         node.widgets.forEach((widget) => {
@@ -117,7 +112,7 @@ app.registerExtension({
                     const x = margin;
                     const y = widget.last_y;
                     const w = node.size[0] - margin * 2;
-                    const h = widget.computeSize ? widget.computeSize(node.size) : LiteGraph.NODE_WIDGET_HEIGHT;
+                    const h = LiteGraph.NODE_WIDGET_HEIGHT;
 
                     ctx.save();
                     ctx.lineWidth = 1;
