@@ -1,16 +1,53 @@
 const app = window.comfyAPI?.app?.app;
 
+const DECAY = 0.25;
+const PREVCHANGED = "#ffa931";
+const WIDGETCOLOR = [102, 102, 102];
+const LOWQUALITYWIDGETCOLOR = [34, 34, 34];
+
 function writePreviousWidgetValues(node) {
     if (!node.widgets) return false;
     node.widgets.forEach((widget, index) => {
         widget._paramHighlighter = widget._paramHighlighter || {
             previousValue: undefined,
-            hasChanged: false
+            hasChanged: false,
+            heat: 0
         };
         widget._paramHighlighter.previousValue = widget.value;
         widget._paramHighlighter.hasChanged = widget.value !== widget._paramHighlighter.previousValue;
     });
     return true;
+}
+
+function calculateColor(heat, base) {
+    if (heat === 1) return "#fff";
+    if (heat <= 0) return null;
+    const keyframes = [
+        { p: 0.00, rgb: base },
+        { p: 0.33, rgb: [119,  51,  51] }, // #733    - dark red
+        { p: 0.66, rgb: [255, 169,  49] }, // #ffa931 - orange
+        { p: 1.00, rgb: [255, 255, 255] }  // #fff    - white
+    ];
+
+    let lower = keyframes[0];
+    let upper = keyframes[keyframes.length - 1];
+
+    for (let i = 0; i < keyframes.length - 1; i++) {
+        if (heat >= keyframes[i].p && heat <= keyframes[i+1].p) {
+            lower = keyframes[i];
+            upper = keyframes[i+1];
+            break;
+        }
+    }
+
+    const range = upper.p - lower.p;
+    const factor = range === 0 ? 0 : (heat - lower.p) / range;
+
+    const r = Math.round(lower.rgb[0] + (upper.rgb[0] - lower.rgb[0]) * factor);
+    const g = Math.round(lower.rgb[1] + (upper.rgb[1] - lower.rgb[1]) * factor);
+    const b = Math.round(lower.rgb[2] + (upper.rgb[2] - lower.rgb[2]) * factor);
+
+    return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
 }
 
 app.registerExtension({
@@ -64,6 +101,7 @@ app.registerExtension({
 
                     const previousValue = this._paramHighlighter.previousValue;
                     this._paramHighlighter.hasChanged = value !== previousValue;
+                    this._paramHighlighter.heat = this._paramHighlighter.hasChanged ? 1 : 0;
 
                     node.setDirtyCanvas(true, true);
 
@@ -76,6 +114,7 @@ app.registerExtension({
     },
 
     async setup() {
+        console.log(LiteGraph);
         const originalQueuePrompt = app.queuePrompt;
 
         // set new previousValues and remove highlight when user runs the workflow
@@ -87,6 +126,11 @@ app.registerExtension({
                     if (node.widgets) {
                         writePreviousWidgetValues(node);
                         node.widgets.forEach((widget) => {
+                            if (!widget._paramHighlighter.hasChanged && widget._paramHighlighter.heat > 0) {
+                                widget._paramHighlighter.heat -= DECAY;
+                            } else {
+                                widget._paramHighlighter.heat = 0;
+                            }
                             widget._paramHighlighter.hasChanged = false;
                         });
                     }
@@ -107,7 +151,7 @@ app.registerExtension({
             const margin = 15;
             node.widgets.forEach((widget) => {
                 if (!widget._paramHighlighter) return;
-                if (widget._paramHighlighter.hasChanged && widget.last_y !== undefined) {
+                if (widget._paramHighlighter.heat && widget.last_y !== undefined) {
 
                     const x = margin;
                     const y = widget.last_y;
@@ -118,21 +162,24 @@ app.registerExtension({
                     ctx.lineWidth = 1;
 
                     const lowQualityZoom = this.ds.scale < app.canvas._lowQualityZoomThreshold
-                    const color = widget._paramHighlighter.hasChanged ? "#ffa931" : null;
+                    const color = calculateColor(widget._paramHighlighter.heat, lowQualityZoom ? LOWQUALITYWIDGETCOLOR : WIDGETCOLOR);
 
-                    ctx.beginPath();
-                    if (ctx.roundRect) {
-                        ctx.roundRect(x, y, w, h, lowQualityZoom ? 0 : h);
-                    } else {
-                        ctx.rect(x, y, w, h);
-                    }
+                    if (color != null) {
+                        ctx.beginPath();
+                        if (ctx.roundRect) {
+                            ctx.roundRect(x, y, w, h, lowQualityZoom ? 0 : h);
+                        } else {
+                            ctx.rect(x, y, w, h);
+                        }
 
-                    if (lowQualityZoom) {
-                        ctx.fillStyle = color;
-                        ctx.fill();
-                    } else {
-                        ctx.strokeStyle = color;
-                        ctx.stroke();
+                        if (lowQualityZoom) {
+                            ctx.globalAlpha = 0.5;
+                            ctx.fillStyle = color;
+                            ctx.fill();
+                        } else {
+                            ctx.strokeStyle = color;
+                            ctx.stroke();
+                        }
                     }
                     ctx.restore();
                 }
