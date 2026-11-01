@@ -21,10 +21,10 @@ function writePreviousWidgetValues(node) {
 }
 
 // interpolate from orange to red to widget outline/background color
-function calculateColor(heat, lowQualityZoom) {
+function calculateColor(heat, baseColor) {
     if (heat <= 0) return null;
     const keyframes = [
-        { p: 0.00, rgb: lowQualityZoom ? LOWQUALITYWIDGETCOLOR : WIDGETCOLOR }, // grey
+        { p: 0.00, rgb: baseColor }, // shade of grey depending on lowQualityZoom
         { p: 0.50, rgb: [119,  51,  51] }, // #733    - dark red
         { p: 1.00, rgb: [255, 169,  49] }, // #ffa931 - orange
     ];
@@ -55,7 +55,6 @@ app.registerExtension({
 
     async init() {
         window._paramHighlighter = window._paramHighlighter || {
-            parameterValues: {},
             isGraphReady: false
         };
     },
@@ -96,24 +95,17 @@ app.registerExtension({
                     const paramHighlighter = window._paramHighlighter;
                     if (!paramHighlighter.isGraphReady) return;
 
-                    const node = this._parentNode || widget._parentNode;
-                    if (!node) return;
-
                     const previousValue = this._paramHighlighter.previousValue;
                     this._paramHighlighter.wasChanged = value !== previousValue;
 
-                    node.setDirtyCanvas(true, true);
-
+                    this._node?.setDirtyCanvas(true, true);
                     originalCallback?.apply(this, arguments);
                 };
-
-                widget._parentNode = this;
             });
         };
     },
 
     async setup() {
-        console.log(LiteGraph);
         const originalQueuePrompt = app.queuePrompt;
 
         // set heat to 1 if just changed
@@ -144,44 +136,53 @@ app.registerExtension({
 
         // hijack drawNodeWidgets to draw an outline on top of the actual widget outline
         // at lower quality, draw a rectangle covering the widget instead
-        const originalDrawNodeWidgets = LGraphCanvas.prototype.drawNodeWidgets;
-        LGraphCanvas.prototype.drawNodeWidgets = function (node, _, ctx) {
-            // call original drawNodeWidgets first
-            originalDrawNodeWidgets?.apply(this, arguments);
+        const originalDrawWidgets = LGraphNode.prototype.drawWidgets;
+        LGraphNode.prototype.drawWidgets = function (ctx, opt = {}) {
+            // call original drawWidgets
+            originalDrawWidgets?.apply(this, arguments);
+            if (!this.widgets?.length || !ctx) return;
 
-            if (!ctx || !node?.widgets) return;
-            const margin = 15;
-            node.widgets.forEach((widget) => {
-                if (!widget._paramHighlighter) return;
-                if (widget._paramHighlighter.wasChanged || widget._paramHighlighter.heat && widget.last_y !== undefined) {
+            this.widgets.forEach((widget) => {
+                if (!widget._paramHighlighter || !(widget._paramHighlighter.wasChanged || widget._paramHighlighter.heat)) return;
+
+                const base = opt.lowQuality ? LOWQUALITYWIDGETCOLOR : WIDGETCOLOR;
+                const color = widget._paramHighlighter.wasChanged ? WHITE : calculateColor(widget._paramHighlighter.heat, base);
+
+                if (widget.type === "customtext" /*&& !opt.lowQuality*/) {
+                    // ignore for now; need special behaviour since customtext uses a textarea HTML element
+                    // const focused = document.activeElement === widget.element;
+                    // if (!focused /*&& (widget._paramHighlighter.wasChanged || widget._paramHighlighter.heat)*/) {
+                    //     widget.element.style.outline = `1px solid ${color}`;
+                    //     widget.element.style.outlineOffset = "1px";
+                    //     widget.element.style.borderRadius = "4px";
+                    // } else {
+                    //     widget.element.style.outline = "";
+                    //     widget.element.style.outlineOffset = "";
+                    // }
+                } else {
+                    const lineWidth = 1;
+                    const margin = 15;
 
                     const x = margin;
-                    const y = widget.last_y;
-                    const w = node.size[0] - margin * 2;
+                    const y = widget.y;
+                    const w = (widget.width || this.renderingSize[0]) - margin * 2;
                     const h = LiteGraph.NODE_WIDGET_HEIGHT;
+                    const r = h * 0.5;
 
                     ctx.save();
-                    ctx.lineWidth = 1;
+                    ctx.lineWidth = lineWidth;
 
-                    const lowQualityZoom = this.ds.scale < app.canvas._lowQualityZoomThreshold
-                    const color = widget._paramHighlighter.wasChanged ? WHITE : calculateColor(widget._paramHighlighter.heat, lowQualityZoom);
-
-                    if (color != null) {
-                        ctx.beginPath();
-                        if (ctx.roundRect) {
-                            ctx.roundRect(x, y, w, h, lowQualityZoom ? 0 : h);
-                        } else {
-                            ctx.rect(x, y, w, h);
-                        }
-
-                        if (lowQualityZoom) {
-                            ctx.fillStyle = color;
-                            ctx.fill();
-                        } else {
-                            ctx.strokeStyle = color;
-                            ctx.stroke();
-                        }
+                    ctx.beginPath();
+                    if (!opt.lowQuality) {
+                        ctx.roundRect(x, y, w, h, r);
+                        ctx.strokeStyle = color;
+                        ctx.stroke();
+                    } else {
+                        ctx.rect(x, y, w, h);
+                        ctx.fillStyle = color;
+                        ctx.fill();
                     }
+
                     ctx.restore();
                 }
             });
