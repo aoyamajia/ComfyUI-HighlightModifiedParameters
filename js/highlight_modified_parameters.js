@@ -1,32 +1,32 @@
 const app = window.comfyAPI?.app?.app;
 
 const DECAY = 0.25;
+const WHITE = "#fff";
 const PREVCHANGED = "#ffa931";
-const WIDGETCOLOR = [102, 102, 102];
+const WIDGETCOLOR = [102, 102, 102]; // TODO grab values from theme
 const LOWQUALITYWIDGETCOLOR = [34, 34, 34];
 
+// store previous value and how recent it was changed (heat)
 function writePreviousWidgetValues(node) {
     if (!node.widgets) return false;
     node.widgets.forEach((widget, index) => {
         widget._paramHighlighter = widget._paramHighlighter || {
             previousValue: undefined,
-            hasChanged: false,
+            wasChanged: false,
             heat: 0
         };
         widget._paramHighlighter.previousValue = widget.value;
-        widget._paramHighlighter.hasChanged = widget.value !== widget._paramHighlighter.previousValue;
     });
     return true;
 }
 
-function calculateColor(heat, base) {
-    if (heat === 1) return "#fff";
+// interpolate from orange to red to widget outline/background color
+function calculateColor(heat, lowQualityZoom) {
     if (heat <= 0) return null;
     const keyframes = [
-        { p: 0.00, rgb: base },
-        { p: 0.33, rgb: [119,  51,  51] }, // #733    - dark red
-        { p: 0.66, rgb: [255, 169,  49] }, // #ffa931 - orange
-        { p: 1.00, rgb: [255, 255, 255] }  // #fff    - white
+        { p: 0.00, rgb: lowQualityZoom ? LOWQUALITYWIDGETCOLOR : WIDGETCOLOR }, // grey
+        { p: 0.50, rgb: [119,  51,  51] }, // #733    - dark red
+        { p: 1.00, rgb: [255, 169,  49] }, // #ffa931 - orange
     ];
 
     let lower = keyframes[0];
@@ -100,8 +100,7 @@ app.registerExtension({
                     if (!node) return;
 
                     const previousValue = this._paramHighlighter.previousValue;
-                    this._paramHighlighter.hasChanged = value !== previousValue;
-                    this._paramHighlighter.heat = this._paramHighlighter.hasChanged ? 1 : 0;
+                    this._paramHighlighter.wasChanged = value !== previousValue;
 
                     node.setDirtyCanvas(true, true);
 
@@ -117,7 +116,8 @@ app.registerExtension({
         console.log(LiteGraph);
         const originalQueuePrompt = app.queuePrompt;
 
-        // set new previousValues and remove highlight when user runs the workflow
+        // set heat to 1 if just changed
+        // otherwise, decay heat each time the workflow is queued
         app.queuePrompt = async function (number, batch_count) {
             const paramHighlighter = window._paramHighlighter;
 
@@ -126,12 +126,13 @@ app.registerExtension({
                     if (node.widgets) {
                         writePreviousWidgetValues(node);
                         node.widgets.forEach((widget) => {
-                            if (!widget._paramHighlighter.hasChanged && widget._paramHighlighter.heat > 0) {
-                                widget._paramHighlighter.heat -= DECAY;
+                            if (widget._paramHighlighter.wasChanged) {
+                                widget._paramHighlighter.heat = 1
+                                widget._paramHighlighter.previousValue = widget.value;
                             } else {
-                                widget._paramHighlighter.heat = 0;
+                                widget._paramHighlighter.heat = Math.max(0, widget._paramHighlighter.heat - DECAY);
                             }
-                            widget._paramHighlighter.hasChanged = false;
+                            widget._paramHighlighter.wasChanged = false;
                         });
                     }
                 });
@@ -142,6 +143,7 @@ app.registerExtension({
         };
 
         // hijack drawNodeWidgets to draw an outline on top of the actual widget outline
+        // at lower quality, draw a rectangle covering the widget instead
         const originalDrawNodeWidgets = LGraphCanvas.prototype.drawNodeWidgets;
         LGraphCanvas.prototype.drawNodeWidgets = function (node, _, ctx) {
             // call original drawNodeWidgets first
@@ -151,7 +153,7 @@ app.registerExtension({
             const margin = 15;
             node.widgets.forEach((widget) => {
                 if (!widget._paramHighlighter) return;
-                if (widget._paramHighlighter.heat && widget.last_y !== undefined) {
+                if (widget._paramHighlighter.wasChanged || widget._paramHighlighter.heat && widget.last_y !== undefined) {
 
                     const x = margin;
                     const y = widget.last_y;
@@ -162,7 +164,7 @@ app.registerExtension({
                     ctx.lineWidth = 1;
 
                     const lowQualityZoom = this.ds.scale < app.canvas._lowQualityZoomThreshold
-                    const color = calculateColor(widget._paramHighlighter.heat, lowQualityZoom ? LOWQUALITYWIDGETCOLOR : WIDGETCOLOR);
+                    const color = widget._paramHighlighter.wasChanged ? WHITE : calculateColor(widget._paramHighlighter.heat, lowQualityZoom);
 
                     if (color != null) {
                         ctx.beginPath();
@@ -173,7 +175,6 @@ app.registerExtension({
                         }
 
                         if (lowQualityZoom) {
-                            ctx.globalAlpha = 0.5;
                             ctx.fillStyle = color;
                             ctx.fill();
                         } else {
