@@ -6,18 +6,25 @@ const PREVCHANGED = "#ffa931";
 const WIDGETCOLOR = [102, 102, 102]; // TODO grab values from theme
 const LOWQUALITYWIDGETCOLOR = [34, 34, 34];
 
-// store previous value and how recent it was changed (heat)
-function writePreviousWidgetValues(node) {
-    if (!node.widgets) return false;
-    node.widgets.forEach((widget, index) => {
-        widget._paramHighlighter = widget._paramHighlighter || {
+// ensure widgets have _paramHighlighter object
+function ensureWidgetParamHighlighter(widget) {
+    if (!widget._paramHighlighter) {
+        widget._paramHighlighter = {
             previousValue: undefined,
             wasChanged: false,
-            heat: 0
+            heat: 0,
+            patched: false
         };
-        widget._paramHighlighter.previousValue = widget.value;
+    }
+    return widget._paramHighlighter;
+}
+
+// store previous value and how recent it was changed (heat)
+function writePreviousWidgetValues(node) {
+    if (!node.widgets) return;
+    node.widgets.forEach((widget) => {
+        ensureWidgetParamHighlighter(widget).previousValue = widget.value;
     });
-    return true;
 }
 
 // interpolate from orange to red to widget outline/background color
@@ -94,6 +101,7 @@ app.registerExtension({
                 widget.callback = function (value) {
                     const paramHighlighter = window._paramHighlighter;
                     if (!paramHighlighter.isGraphReady) return;
+                    ensureWidgetParamHighlighter(this);
 
                     const previousValue = this._paramHighlighter.previousValue;
                     this._paramHighlighter.wasChanged = value !== previousValue;
@@ -134,58 +142,85 @@ app.registerExtension({
             return originalQueuePrompt.apply(this, arguments);
         };
 
+        // avoid potentially re-wrapping ad infinitum
+        if (LGraphNode.prototype.drawWidgets._paramHighlighter?.patched) return;
+        LGraphNode.prototype.drawWidgets._paramHighlighter = {patched: true};
         // hijack drawNodeWidgets to draw an outline on top of the actual widget outline
         // at lower quality, draw a rectangle covering the widget instead
         const originalDrawWidgets = LGraphNode.prototype.drawWidgets;
         LGraphNode.prototype.drawWidgets = function (ctx, opt = {}) {
+            // wrap fillText to italicise modified values
+            if (this.widgets?.length) {
+                this.widgets.forEach((widget) => {
+                    if (ensureWidgetParamHighlighter(widget).patched) return;
+                    widget._paramHighlighter.patched = true;
+
+                    const originalDraw = widget.drawWidget;
+                    widget.drawWidget = function (ctx, opt = {}) {
+                        const previousFont = ctx.font;
+                        try {
+                            if (widget._paramHighlighter?.wasChanged && !previousFont.includes("italic"))  {
+                                ctx.font = `italic ${previousFont}`;
+                            }
+                            return originalDraw?.apply(this, arguments);
+                        } finally {
+                            ctx.font = previousFont;
+                        }
+                    };
+                });
+            }
+
             // call original drawWidgets
-            originalDrawWidgets?.apply(this, arguments);
-            if (!this.widgets?.length || !ctx) return;
+            try {
+                originalDrawWidgets?.apply(this, arguments);
+            } finally {
+                if (!this.widgets?.length || !ctx) return;
 
-            this.widgets.forEach((widget) => {
-                if (!widget._paramHighlighter || !(widget._paramHighlighter.wasChanged || widget._paramHighlighter.heat)) return;
+                this.widgets.forEach((widget) => {
+                    if (!widget._paramHighlighter || !(widget._paramHighlighter.wasChanged || widget._paramHighlighter.heat)) return;
 
-                const base = opt.lowQuality ? LOWQUALITYWIDGETCOLOR : WIDGETCOLOR;
-                const color = widget._paramHighlighter.wasChanged ? WHITE : calculateColor(widget._paramHighlighter.heat, base);
+                    const base = opt.lowQuality ? LOWQUALITYWIDGETCOLOR : WIDGETCOLOR;
+                    const color = widget._paramHighlighter.wasChanged ? WHITE : calculateColor(widget._paramHighlighter.heat, base);
 
-                if (widget.type === "customtext" /*&& !opt.lowQuality*/) {
-                    // ignore for now; need special behaviour since customtext uses a textarea HTML element
-                    // const focused = document.activeElement === widget.element;
-                    // if (!focused /*&& (widget._paramHighlighter.wasChanged || widget._paramHighlighter.heat)*/) {
-                    //     widget.element.style.outline = `1px solid ${color}`;
-                    //     widget.element.style.outlineOffset = "1px";
-                    //     widget.element.style.borderRadius = "4px";
-                    // } else {
-                    //     widget.element.style.outline = "";
-                    //     widget.element.style.outlineOffset = "";
-                    // }
-                } else {
-                    const lineWidth = 1;
-                    const margin = 15;
-
-                    const x = margin;
-                    const y = widget.y;
-                    const w = (widget.width || this.renderingSize[0]) - margin * 2;
-                    const h = LiteGraph.NODE_WIDGET_HEIGHT;
-                    const r = h * 0.5;
-
-                    ctx.save();
-                    ctx.lineWidth = lineWidth;
-
-                    ctx.beginPath();
-                    if (!opt.lowQuality) {
-                        ctx.roundRect(x, y, w, h, r);
-                        ctx.strokeStyle = color;
-                        ctx.stroke();
+                    if (widget.type === "customtext" /*&& !opt.lowQuality*/) {
+                        // ignore for now; need special behaviour since customtext uses a textarea HTML element
+                        // const focused = document.activeElement === widget.element;
+                        // if (!focused /*&& (widget._paramHighlighter.wasChanged || widget._paramHighlighter.heat)*/) {
+                        //     widget.element.style.outline = `1px solid ${color}`;
+                        //     widget.element.style.outlineOffset = "1px";
+                        //     widget.element.style.borderRadius = "4px";
+                        // } else {
+                        //     widget.element.style.outline = "";
+                        //     widget.element.style.outlineOffset = "";
+                        // }
                     } else {
-                        ctx.rect(x, y, w, h);
-                        ctx.fillStyle = color;
-                        ctx.fill();
-                    }
+                        const lineWidth = 1;
+                        const margin = 15;
 
-                    ctx.restore();
-                }
-            });
+                        const x = margin;
+                        const y = widget.y;
+                        const w = (widget.width || this.renderingSize[0]) - margin * 2;
+                        const h = LiteGraph.NODE_WIDGET_HEIGHT;
+                        const r = h * 0.5;
+
+                        ctx.save();
+                        ctx.lineWidth = lineWidth;
+
+                        ctx.beginPath();
+                        if (!opt.lowQuality) {
+                            ctx.roundRect(x, y, w, h, r);
+                            ctx.strokeStyle = color;
+                            ctx.stroke();
+                        } else {
+                            ctx.rect(x, y, w, h);
+                            ctx.fillStyle = color;
+                            ctx.fill();
+                        }
+
+                        ctx.restore();
+                    }
+                });
+            }
         };
     }
 });
